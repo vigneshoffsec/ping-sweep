@@ -3,57 +3,119 @@ import threading
 import ipaddress
 import queue
 import time
+import json
+import random
+import socket
+from datetime import datetime
+import sys
 
-THREADS = 50
-TIMEOUT = 1  # seconds
+THREADS = 100
+ICMP_TIMEOUT = 1
+TCP_TIMEOUT = 0.3
+PORT_TO_PROBE = 80  # TCP SYN port for alternative probing
 
 results = []
 lock = threading.Lock()
+processed = 0
+total_hosts = 0
 
 
-def is_host_up(ip):
-    """
-    Use system ping (ICMP) to check if host is alive.
-    Works on Linux and Mac automatically.
-    """
+def icmp_ping(ip):
+    """ICMP ping using system command (Linux & Mac)."""
     try:
-        output = subprocess.run(
-            ["ping", "-c", "1", "-W", str(TIMEOUT), str(ip)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-
+        cmd = ["ping", "-c", "1", "-W", str(ICMP_TIMEOUT), str(ip)]
+        output = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return output.returncode == 0
     except Exception:
         return False
 
 
+def tcp_syn(ip):
+    """Simple TCP connect scan (not full handshake)."""
+    try:
+        sock = socket.socket()
+        sock.settimeout(TCP_TIMEOUT)
+        sock.connect((str(ip), PORT_TO_PROBE))
+        sock.close()
+        return True
+    except:
+        return False
+
+
 def worker(q):
+    global processed
     while True:
         try:
             ip = q.get_nowait()
         except queue.Empty:
             return
 
-        if is_host_up(ip):
-            with lock:
+        alive = False
+
+        # Try ICMP first (quiet & simple)
+        if icmp_ping(ip):
+            alive = True
+        else:
+            # Fallback TCP SYN probe (often bypasses ICMP filters)
+            if tcp_syn(ip):
+                alive = True
+
+        with lock:
+            processed += 1
+            if alive:
                 results.append(str(ip))
-                print(f"[+] Host Up: {ip}")
+                print(f"\033[92m[+] Host Up:\033[0m {ip}")
 
         q.task_done()
 
 
-def run_sweep(network):
-    """
-    Accepts a subnet like 192.168.1.0/24
-    """
-    net = ipaddress.ip_network(network, strict=False)
+def progress_bar():
+    """Simple dynamic progress bar shown while workers run."""
+    while processed < total_hosts:
+        percentage = (processed / total_hosts) * 100
+        sys.stdout.write(f"\rProgress: {percentage:.2f}%")
+        sys.stdout.flush()
+        time.sleep(0.25)
+
+
+def save_reports():
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    # TXT
+    with open(f"reports/hosts-{timestamp}.txt", "w") as f:
+        for host in results:
+            f.write(host + "\n")
+
+    # JSON
+    with open(f"reports/hosts-{timestamp}.json", "w") as f:
+        json.dump({"alive_hosts": results}, f, indent=4)
+
+    # Nmap list
+    with open(f"reports/nmap-list-{timestamp}.txt", "w") as f:
+        f.write(" ".join(results))
+
+    print("\n\033[94mReports saved in /reports folder\033[0m")
+
+
+def run_scan(network):
+    global total_hosts
+
+    # Randomize order to avoid IDS signature of sequential sweeps
+    net = list(ipaddress.ip_network(network, strict=False).hosts())
+    random.shuffle(net)
+
+    total_hosts = len(net)
 
     q = queue.Queue()
-
-    for ip in net.hosts():
+    for ip in net:
         q.put(ip)
 
+    # Start progress bar
+    p = threading.Thread(target=progress_bar)
+    p.daemon = True
+    p.start()
+
+    # Start workers
     threads = []
     for _ in range(THREADS):
         t = threading.Thread(target=worker, args=(q,))
@@ -61,20 +123,18 @@ def run_sweep(network):
         threads.append(t)
 
     q.join()
-
     for t in threads:
         t.join()
 
-    print("\n=== Alive Hosts ===")
-    for host in results:
-        print(host)
+    print("\n\n\033[92mScan Completed.\033[0m")
+    save_reports()
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Threaded ICMP Ping Sweep Tool")
-    parser.add_argument("network", help="Network in CIDR format, e.g., 192.168.1.0/24")
+    parser = argparse.ArgumentParser(description="Advanced Threaded Host Discovery Tool")
+    parser.add_argument("network", help="CIDR notation, e.g., 10.0.0.0/24")
 
     args = parser.parse_args()
-    run_sweep(args.network)
+    run_scan(args.network)
