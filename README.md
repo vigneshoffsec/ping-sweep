@@ -6,6 +6,17 @@ This tool produces **Nmap-ready host lists**, clean reports, and supports large 
 
 ---
 
+<p align="center">
+  <img src="assets/Ping Sweep.png" width="600">
+</p>
+<br>
+<p align="center">
+  <img src="https://img.shields.io/badge/status-active-brightgreen">
+  <img src="https://img.shields.io/badge/language-python-blue">
+  <img src="https://img.shields.io/badge/type-offensive%20security-red">
+  <img src="https://img.shields.io/badge/license-MIT-yellow">
+</p>
+
 # 📂 Project Structure
 
 ```
